@@ -1,10 +1,14 @@
+import inspect
 import os
 import time
+from collections import deque
+
 import numpy as np
 import torch
 import gymnasium as gym
 from typing import Optional, Union, Tuple, List
 import tqdm
+from git import Object
 from typeguard import typechecked
 from utils import auto_device, env_id_to_envs, find_torch_modules
 from Logger import BaseLogger, StdLogger
@@ -12,19 +16,31 @@ from Buffer import Buffer
 # use get_type_hints to throw errors if the user passes in an invalid type:
 
 
-def get_new_params(base_cls_obj, locals):
-    for it in {'self', 'args', 'TypeCheckMemo', 'memo', 'check_argument_types', 'env', 'eval_env', 'architecture'}:
-        locals.pop(it, None)
-    base_class_kwargs = {} if base_cls_obj is None else base_cls_obj.kwargs
-
-    return {**locals, **base_class_kwargs}
+# def get_new_params(base_cls_obj, locals):
+#     for it in {'self', 'args', 'kwargs', 'TypeCheckMemo', 'memo', 'check_argument_types', 'env', 'eval_env', 'architecture'}:
+#         locals.pop(it, None)
+#     base_class_kwargs = {} if base_cls_obj is None else base_cls_obj.kwargs
+#
+#     return {**locals, **base_class_kwargs}
 
 
 class BaseAgent:
+    def get_all_kwargs(self):
+        cls = self.__class__
+        classes = deque([cls])
+        kwargs = {}
+        while classes:
+            cls = classes.popleft()
+            classes.extend(cls.__bases__)
+            for str_arg in inspect.getfullargspec(cls.__init__).args[1:]:
+                kwargs[str_arg] = getattr(self, str_arg)
+            for str_arg in inspect.getfullargspec(cls.__init__).kwonlyargs:
+                kwargs[str_arg] = getattr(self, str_arg)
+        return kwargs
+
     @typechecked
     def __init__(self,
                  env_id: Union[str, gym.Env],
-                 architecture: Union[str, torch.nn.Module, callable] = "mlp",
                  learning_rate: float = 3e-4,
                  batch_size: int = 64,
                  buffer_size: int = 100_000,
@@ -34,11 +50,17 @@ class BaseAgent:
                  learning_starts=5_000,
                  device: Union[torch.device, str] = "auto",
                  render: bool = False,
-                 loggers: Tuple[BaseLogger] = (StdLogger(),),
+                 loggers: Tuple[callable] = (StdLogger,),
+                 logger_params: Tuple[dict] = ({},),
                  log_interval: int = 1_000,
                  save_checkpoints: bool = False,
+                 chkp_interval: int =10_000,
+                 chkp_latest_only: bool = True,
                  seed: Optional[int] = None,
                  eval_callbacks: List[callable] = [],
+                 online: bool = False,
+                 save_buffer=False,
+                 base_path: Optional[str] = './',
                  ) -> None:
 
         self.LOG_PARAMS = {
@@ -50,10 +72,13 @@ class BaseAgent:
             'train/num. updates': '_n_updates',
             'train/lr': 'learning_rate',
         }
-        self.learn_env_steps = 0
+        # global number of training steps taken
         self.tot_env_steps = 0
+        # current number of training steps taken within the learn()
+        self.learn_env_steps = 0
+        # current target of training steps to be taken within the learn()
         self.tot_learn_env_steps = 0
-        self.kwargs = get_new_params(None, locals())
+        # self.kwargs = get_new_params(None, locals())
         is_atari = False
         permute_dims = False
         if isinstance(env_id, str):
@@ -70,19 +95,27 @@ class BaseAgent:
         else:
             self.env_str = str(self.env.unwrapped)
 
-        self.architecture = architecture
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.buffer_size = buffer_size
         self.batch_size = batch_size
-        
+        self.save_buffer = save_buffer
+        self.chkp_latest_only = chkp_latest_only
+        self.base_path = base_path
+        self.seed = seed
+        self.online = online
+        self.env_id = env_id
+        self.render = render
         self.loggers = loggers
+        self.logger_params = logger_params
 
+        self.log_objs = [lg(**lg_param) for lg, lg_param in zip(loggers, logger_params)]
         self.gradient_steps = gradient_steps
         self.device = auto_device(device)
 
         #TODO: Implement save_checkpoints
         self.save_checkpoints = save_checkpoints
+        self.chkp_interval = chkp_interval if save_checkpoints else -1
         self.log_interval = log_interval
 
         self.train_interval = train_interval
@@ -110,11 +143,11 @@ class BaseAgent:
 
     def log_hparams(self, hparam_dict):
         # Log the agent's hyperparameters:
-        for logger in self.loggers:
+        for logger in self.log_objs:
             logger.log_hparams(hparam_dict)
 
     def log_history(self, param, val, step):
-        for logger in self.loggers:
+        for logger in self.log_objs:
             logger.log_history(param, val, step)
 
     def _initialize_networks(self):
@@ -186,13 +219,16 @@ class BaseAgent:
                     next_state = np.array([next_state])
                     self.buffer.add(state, action, reward, terminated)
                     state = next_state
-                    if self.learn_env_steps % self.log_interval == 0:
+                    if self.tot_env_steps % self.log_interval == 0:
                         train_time = (time.thread_time_ns() - init_train_time) / 1e9
                         train_fps = self.log_interval / train_time
                         self.log_history('time/train_fps', train_fps, self.learn_env_steps)
                         self.avg_eval_rwd = self.evaluate()
                         init_train_time = time.thread_time_ns()
                         pbar.update(self.log_interval)
+                    if self.save_checkpoints and self.tot_env_steps % self.chkp_interval == 0:
+                        path = f"{str(self)}_{self.tot_env_steps}" if not self.chkp_latest_only else f"{str(self)}_latest"
+                        self.save(os.path.join(self.base_path, path))
 
                 if done:
                     self.log_history("rollout/ep_reward", self.rollout_reward, self.learn_env_steps)
@@ -246,15 +282,18 @@ class BaseAgent:
 
     def save(self, path=None):
         if path is None:
-            path = str(self)
+            path = os.path.join(self.base_path, str(self))
         # save the number of time steps:
-        self.kwargs['num_timesteps'] = self.learn_env_steps
-        self.kwargs['continue_training'] = True
+        kwargs = self.get_all_kwargs()
         total_state = {
-            "kwargs": self.kwargs,
+            "kwargs": kwargs,
             "state_dicts": find_torch_modules(self),
-            "class": self.__class__.__name__
+            "class": self.__class__.__name__,
+            "tot_env_steps": self.tot_env_steps,
+            "continue_training": True
         }
+        if self.save_buffer:
+            total_state['buffer'] = self.buffer
         # if the path is a directory, make :
         if '/' in path:
             bp = path.split('/')
@@ -280,10 +319,11 @@ class BaseAgent:
             for attr in attrs:
                 module = getattr(module, attr)
             module.load_state_dict(v)
+        if 'buffer' in state:
+            agent.buffer = state['buffer']
+        agent.tot_env_steps = state['tot_env_steps']
+        agent.continue_training = state['continue_training']
         return agent
-    
 
-if __name__ == '__main__':
-    from Logger import WandBLogger
-    logger = WandBLogger(entity="jacobhadamczyk", project="test")
-    agent = BaseAgent("CartPole-v1")
+    def __str__(self):
+        return f"{self.__class__.__name__}_{self.env_str}"

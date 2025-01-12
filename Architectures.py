@@ -5,9 +5,8 @@ from utils import auto_device
 
 class MLP(nn.Module):
     def __init__(self, 
-                 input_dim, 
-                 output_dim, 
-                 *args, 
+                 input_dim:int,
+                 output_dim:int,
                  activation=nn.ReLU,
                  hidden_dims=(64, 64), 
                  output_activation=None,
@@ -136,3 +135,11 @@ def make_continuous_action_mlp(input_dim, output_dim, hidden_dims=(128, 128), ac
     if output_activation is not None:
         layers.append(output_activation())
     return nn.Sequential(*layers)
+
+
+str_to_arch = {
+    'mlp': make_mlp,
+    'cnn': make_cnn_sequential,
+    'atari': make_atari_nature_cnn,
+    'continuous_mlp': make_continuous_action_mlp
+}

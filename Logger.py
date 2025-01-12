@@ -6,9 +6,7 @@ import wandb
 import os
 
 
-
 logger_types = {'wandb', 'std', 'tensorboard'}
-
 
 class BaseLogger: 
     def log_hparams(self, hparam_dict):
@@ -19,10 +17,14 @@ class BaseLogger:
         raise NotImplementedError()
     def log_image(self, image_path):
         raise NotImplementedError()
-        
+    def __repr__(self):
+        return f"{self.__class__.__name__}:{self.args}"
+    def make_logger(self, lg_cls, lg_args):
+        return str_to_cls[lg_cls](*lg_args)
 
 class WandBLogger(BaseLogger):
     def __init__(self, entity, project):
+        self.args = (entity, project)
         wandb.init(entity=entity, project=project)
     def log_hparams(self, hparam_dict):
         for param, value in hparam_dict.items():
@@ -38,9 +40,9 @@ class WandBLogger(BaseLogger):
     def log_image(self, image_path, name="image"):
         wandb.log({name: wandb.Image(image_path)})
 
-
 class StdLogger(BaseLogger):
     def __init__(self, logger=None):
+        self.args = (logger,)
         if logger is not None:
             self.log = logger
         else:
@@ -63,14 +65,18 @@ class StdLogger(BaseLogger):
         self.log.warning("videos are not logged by std logger")
     
 class TensorboardLogger(BaseLogger):
-    def __init__(self, log_dir):
+    def __init__(self, log_dir, id=None):
+        self.args = (log_dir,id)
         # Check for existence of log_dir:
         # get the length of folders with same name:
         folder_name = log_dir
-        i = 1
-        while os.path.exists(folder_name):
-            folder_name = f"{log_dir}_{i}"
-            i += 1
+        if id is None:
+            i = 1
+            while os.path.exists(folder_name):
+                folder_name = f"{log_dir}_{i}"
+                i += 1
+        else:
+            folder_name = f"{log_dir}_{id}"
         log_dir = folder_name
         self.writer = SummaryWriter(log_dir)
     def log_hparams(self, hparam_dict):
@@ -82,3 +88,9 @@ class TensorboardLogger(BaseLogger):
         self.writer.add_video(name, video_path)
     def log_image(self, image_path, name="image"):
         self.writer.add_image(name, image_path)
+
+str_to_cls = {
+    'WandbLogger': WandBLogger,
+    'StdLogger': StdLogger,
+    'TensorboardLogger': TensorboardLogger
+}

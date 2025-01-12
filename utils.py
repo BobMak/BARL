@@ -86,12 +86,7 @@ def find_torch_modules(module, modules=None, prefix=None):
     # Recursively find all submodules if the current module is a container
     if submodules:
         for name, sub_module in submodules():
-            if prefix:
-                mod_name = f"{prefix}.{name}"
-            else:
-                mod_name = name
-            if name in mod_name.split('.'):
-                continue
+            mod_name = f"{prefix}.{name}" if prefix else name
             find_torch_modules(sub_module, modules, mod_name)
 
     return modules
@@ -115,7 +110,8 @@ def polyak(target_nets, online_nets, tau):
             #     target_param.data.mul_(tau).add_(new_param.data, alpha=1.0-tau)
             #TODO: Remove dependency on stable_baselines3 by using in-place ops as above.
             # zip does not raise an exception if length of parameters does not match.
-            for param, target_param in zip_strict(new_params, target_params):
+            for param, target_param in zip(new_params, target_params):
+                assert param.data.shape == target_param.data.shape, f"Shapes of online and target parameters do not match: {param.data.shape} vs {target_param.data.shape}"
                 target_param.data.mul_(1 - tau)
                 torch.add(target_param.data, param.data, alpha=tau, out=target_param.data)
 
@@ -125,17 +121,6 @@ def auto_device(device: Union[torch.device, str] = 'auto'):
         return 'cuda' if torch.cuda.is_available() else 'cpu'
     else:
         return device
-    
-def zip_strict(*iterables):
-    """
-    zip() function but enforces that iterables are of equal length.
-    Raises ValueError if iterables are not of equal length.
-
-    :param *iterables: iterables to zip()
-    """
-
-    # Yield the zipped items
-    yield from zip(*iterables, strict=True)
 
 def env_id_to_envs(env_id, render, is_atari=False, permute_dims=False):
     if isinstance(env_id, gym.Env):
