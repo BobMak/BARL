@@ -2,91 +2,64 @@ import inspect
 import os
 import time
 from collections import deque
+from dataclasses import dataclass, field
 
 import numpy as np
 import torch
 import gymnasium as gym
 from typing import Optional, Union, Tuple, List
 import tqdm
-from git import Object
 from typeguard import typechecked
 from utils import auto_device, env_id_to_envs, find_torch_modules
-from Logger import BaseLogger, StdLogger
+from loggers.BaseLogger import BaseLogger
 from Buffer import Buffer
 # use get_type_hints to throw errors if the user passes in an invalid type:
 
 
-# def get_new_params(base_cls_obj, locals):
-#     for it in {'self', 'args', 'kwargs', 'TypeCheckMemo', 'memo', 'check_argument_types', 'env', 'eval_env', 'architecture'}:
-#         locals.pop(it, None)
-#     base_class_kwargs = {} if base_cls_obj is None else base_cls_obj.kwargs
-#
-#     return {**locals, **base_class_kwargs}
-
-
+@dataclass
+@typechecked
 class BaseAgent:
-    def get_all_kwargs(self):
-        cls = self.__class__
-        classes = deque([cls])
-        kwargs = {}
-        while classes:
-            cls = classes.popleft()
-            classes.extend(cls.__bases__)
-            for str_arg in inspect.getfullargspec(cls.__init__).args[1:]:
-                kwargs[str_arg] = getattr(self, str_arg)
-            for str_arg in inspect.getfullargspec(cls.__init__).kwonlyargs:
-                kwargs[str_arg] = getattr(self, str_arg)
-        return kwargs
+    env_id: str = None
+    learning_rate: float = 3e-4
+    batch_size: int = 64
+    buffer_size: int = 100_000
+    gradient_steps: int = 1
+    train_interval: int = 1
+    max_grad_norm: float = 10
+    learning_starts = 5_000
+    device: Union[torch.device, str] = "auto"
+    render: bool = False
+    loggers: Tuple[callable] = ()
+    logger_params: Tuple[dict] = ({},)
+    log_interval: int = 1_000
+    save_checkpoints: bool = False
+    chkp_interval: int = 10_000
+    chkp_latest_only: bool = True
+    seed: Optional[int] = None
+    eval_callbacks: Tuple[callable] = ()
+    online: bool = False
+    save_buffer: bool = False
+    base_path: Optional[str] = './'
+    env: Optional[gym.Env] = field(init=False)
+    eval_env: Optional[gym.Env] = field(init=False)
+    tot_env_steps: int = field(init=False)
+    log_objs: List[BaseLogger] = field(init=False)
+    buffer: Buffer = field(init=False)
 
-    @typechecked
-    def __init__(self,
-                 env_id: Union[str, gym.Env],
-                 learning_rate: float = 3e-4,
-                 batch_size: int = 64,
-                 buffer_size: int = 100_000,
-                 gradient_steps: int = 1,
-                 train_interval: int = 1,
-                 max_grad_norm: float = 10,
-                 learning_starts=5_000,
-                 device: Union[torch.device, str] = "auto",
-                 render: bool = False,
-                 loggers: Tuple[callable] = (StdLogger,),
-                 logger_params: Tuple[dict] = ({},),
-                 log_interval: int = 1_000,
-                 save_checkpoints: bool = False,
-                 chkp_interval: int =10_000,
-                 chkp_latest_only: bool = True,
-                 seed: Optional[int] = None,
-                 eval_callbacks: List[callable] = [],
-                 online: bool = False,
-                 save_buffer=False,
-                 base_path: Optional[str] = './',
-                 ) -> None:
-
-        self.LOG_PARAMS = {
-            'train/env. steps': 'env_steps',
-            'eval/avg_reward': 'avg_eval_rwd',
-            'eval/auc': 'eval_auc',
-            'train/num. episodes': 'num_episodes',
-            'train/fps': 'train_fps',
-            'train/num. updates': '_n_updates',
-            'train/lr': 'learning_rate',
-        }
+    def __post_init__(self) -> None:
         # global number of training steps taken
         self.tot_env_steps = 0
         # current number of training steps taken within the learn()
         self.learn_env_steps = 0
         # current target of training steps to be taken within the learn()
         self.tot_learn_env_steps = 0
-        # self.kwargs = get_new_params(None, locals())
         is_atari = False
         permute_dims = False
-        if isinstance(env_id, str):
-            if 'ALE' in env_id or 'NoFrameskip' in env_id:
+        if isinstance(self.env_id, str):
+            if 'ALE' in self.env_id or 'NoFrameskip' in self.env_id:
                 is_atari=True
                 permute_dims=True
-            self.env_str = env_id
-        self.env, self.eval_env = env_id_to_envs(env_id, render, is_atari=is_atari, permute_dims=permute_dims)
+        self.env, self.eval_env = env_id_to_envs(self.env_id, self.render, is_atari=is_atari, permute_dims=permute_dims)
 
         if hasattr(self.env.unwrapped.spec, 'id'):
             self.env_str = self.env.unwrapped.spec.id
@@ -95,51 +68,23 @@ class BaseAgent:
         else:
             self.env_str = str(self.env.unwrapped)
 
-        self.learning_rate = learning_rate
-        self.batch_size = batch_size
-        self.buffer_size = buffer_size
-        self.batch_size = batch_size
-        self.save_buffer = save_buffer
-        self.chkp_latest_only = chkp_latest_only
-        self.base_path = base_path
-        self.seed = seed
-        self.online = online
-        self.env_id = env_id
-        self.render = render
-        self.loggers = loggers
-        self.logger_params = logger_params
+        self.log_objs = [lg(**lg_param) for lg, lg_param in zip(self.loggers, self.logger_params)]
+        self.device = auto_device(self.device)
+        self.chkp_interval = self.chkp_interval if self.save_checkpoints else -1
 
-        self.log_objs = [lg(**lg_param) for lg, lg_param in zip(loggers, logger_params)]
-        self.gradient_steps = gradient_steps
-        self.device = auto_device(device)
-
-        #TODO: Implement save_checkpoints
-        self.save_checkpoints = save_checkpoints
-        self.chkp_interval = chkp_interval if save_checkpoints else -1
-        self.log_interval = log_interval
-
-        self.train_interval = train_interval
-        if isinstance(train_interval, tuple):
-            raise NotImplementedError("train_interval as a tuple is not supported yet.\
-                                       \nEnter int corresponding to env_steps")
-        self.max_grad_norm = max_grad_norm
-        self.learning_starts = learning_starts
-        self.eval_callbacks = [eb(self) for eb in eval_callbacks]
+        self.eval_callbacks = [eb(self) for eb in self.eval_callbacks]
         self.avg_eval_rwd = None
         self.fps = None
         self.train_this_step = False
+        self.num_episodes = 0
+        self._n_updates = 0
 
         self.buffer = Buffer(
-            buffer_size=buffer_size,
+            buffer_size=self.buffer_size,
             state=self.env.observation_space.sample(),
             action=self.env.action_space.sample(),
-            device=device
+            device=self.device
         )
-
-        self.eval_auc = 0
-        self.num_episodes = 0
-
-        self._n_updates = 0
 
     def log_hparams(self, hparam_dict):
         # Log the agent's hyperparameters:
@@ -167,7 +112,6 @@ class BaseAgent:
         Sample the replay buffer and do the updates
         (gradient descent and update target networks)
         """
-        
         # Increase update counter
         self._n_updates += gradient_steps
         for _ in range(gradient_steps):
@@ -245,11 +189,6 @@ class BaseAgent:
             if self.learn_env_steps > self.learning_starts:
                 self._train(self.gradient_steps, self.batch_size)
 
-    def _log_stats(self):
-        # Get the current learning rate from the optimizer:
-        for log_name, class_var in self.LOG_PARAMS.items():
-            self.log_history(log_name, self.__dict__[class_var], self.learn_env_steps)
-
     def evaluate(self, n_episodes=10) -> float:
         # run the current policy and return the average reward
         avg_reward = 0.
@@ -279,6 +218,19 @@ class BaseAgent:
         for callback in self.eval_callbacks:
             callback(self, end=True)
         return avg_reward
+
+    def get_all_kwargs(self):
+        cls = self.__class__
+        classes = deque([cls])
+        kwargs = {}
+        while classes:
+            cls = classes.popleft()
+            classes.extend(cls.__bases__)
+            for str_arg in inspect.getfullargspec(cls.__init__).args[1:]:
+                kwargs[str_arg] = getattr(self, str_arg)
+            for str_arg in inspect.getfullargspec(cls.__init__).kwonlyargs:
+                kwargs[str_arg] = getattr(self, str_arg)
+        return kwargs
 
     def save(self, path=None):
         if path is None:

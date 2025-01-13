@@ -6,9 +6,8 @@ import gymnasium as gym
 import numpy as np
 
 import torch
-import wandb
-
 from wrappers import FireResetEnv, FrameStack, PermuteAtariObs
+
 
 def env_id_to_envs(env_id, render):
     if isinstance(env_id, gym.Env):
@@ -21,19 +20,6 @@ def env_id_to_envs(env_id, render):
         env = gym.make(env_id)
         eval_env = gym.make(env_id, render_mode='human' if render else None)
         return env, eval_env
-    
-
-def log_class_vars(self, logger, params, use_wandb=False):
-    for item in params:
-        value = self.__dict__[item]
-        # TODO: Maybe change this logic so that params are always of same type so we don't have to check for tensors here:?
-        # TODO: Somehow streamline wandb vs stdout vs tensorboard logging:?
-        # first check if value is a tensor:
-        if isinstance(value, torch.Tensor):
-            value = value.item()
-        logger.record(item, value)
-        if use_wandb:
-            wandb.log({item: value})
 
 
 def sample_wandb_hyperparams(params):

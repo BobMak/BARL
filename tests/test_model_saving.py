@@ -1,12 +1,8 @@
 import unittest
-import logging
 import os
 import shutil
-from io import StringIO
 import sys
 import random as rnd
-
-from skimage.future.graph.setup import base_path
 
 sys.path.append('./')
 from DQN import DQN

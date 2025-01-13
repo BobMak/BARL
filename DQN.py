@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 from typing import Optional, Union
 import gymnasium as gym
 import numpy as np
@@ -7,68 +8,55 @@ from BaseAgent import BaseAgent
 from utils import polyak
 
 
+@dataclass
 class DQN(BaseAgent):
-    def __init__(self,
-                 *args,
-                 architecture: Union[str, torch.nn.Module, callable] = "mlp",
-                 gamma: float = 0.99,
-                 minimum_epsilon: float = 0.05,
-                 exploration_fraction: float = 0.5,
-                 initial_epsilon: float = 1.0,
-                 use_target_network: bool = False,
-                 target_update_interval: Optional[int] = None,
-                 polyak_tau: Optional[float] = None,
-                 architecture_kwargs: dict = {},
-                 **kwargs,
-                 ):
-        
-        super().__init__(*args, **kwargs)
-        
+    architecture: Union[str, torch.nn.Module, callable] = "mlp"
+    gamma: float = 0.99
+    minimum_epsilon: float = 0.05
+    exploration_fraction: float = 0.5
+    initial_epsilon: float = 1.0
+    use_target_network: bool = False
+    target_update_interval: Optional[int] = None
+    polyak_tau: Optional[float] = None
+    architecture_kwargs: dict = field(default_factory=dict)
+    nA: int = 0
+    optimizer: torch.optim.Optimizer = field(init=False)
+    def __post_init__(self):
+        super().__post_init__()
+        self.epsilon = self.initial_epsilon
         self.algo_name = 'SQL'
-        self.gamma = gamma
-        self.minimum_epsilon = minimum_epsilon
-        self.exploration_fraction = exploration_fraction
-        self.initial_epsilon = initial_epsilon
-        self.epsilon = initial_epsilon
-        self.use_target_network = use_target_network
-        self.target_update_interval = target_update_interval
-        self.polyak_tau = polyak_tau
-       
         self.nA = self.env.action_space.n
-        self.architecture = architecture
-        if type(architecture) == str:
-            arch = str_to_arch[architecture]
+        if type(self.architecture) == str:
+            arch = str_to_arch[self.architecture]
         else:
-            arch = architecture
-        self.architecture_kwargs = architecture_kwargs
-        architecture_kwargs['input_dim'] = (
+            arch = self.architecture
+        self.architecture_kwargs['input_dim'] = (
             self.env.observation_space.shape)[0] if arch == make_mlp else self.env.observation_space.shape
-        architecture_kwargs['output_dim'] = (
+        self.architecture_kwargs['output_dim'] = (
             self.env.action_space.n) if isinstance(self.env.action_space, gym.spaces.Discrete) \
             else self.env.action_space.shape
         self.log_hparams(self.get_all_kwargs())
-        self.online_qs = arch(**architecture_kwargs)
+        self.online_qs = arch(**self.architecture_kwargs)
         self.model = self.online_qs
 
         if self.use_target_network:
             # Make another instance of the architecture for the target network:
-            self.target_qs = self.architecture(**architecture_kwargs)
+            self.target_qs = arch(**self.architecture_kwargs)
             self.target_qs.load_state_dict(self.online_qs.state_dict())
-            if polyak_tau is not None:
-                assert 0 <= polyak_tau <= 1, "Polyak tau must be in the range [0, 1]."
-                self.polyak_tau = polyak_tau
+            if self.polyak_tau is not None:
+                assert 0 <= self.polyak_tau <= 1, "Polyak tau must be in the range [0, 1]."
             else:
                 print("WARNING: No polyak tau specified for soft target updates. Using default tau=1 for hard updates.")
                 self.polyak_tau = 1.0
 
-            if target_update_interval is None:
+            if self.target_update_interval is None:
                 print("WARNING: Target network update interval not specified. Using default interval of 1 step.")
                 self.target_update_interval = 1
         # Alias the "target" with online net if target is not used:
         else:
             self.target_qs = self.online_qs
             # Raise a warning if update interval is specified:
-            if target_update_interval is not None:
+            if self.target_update_interval is not None:
                 print("WARNING: Target network update interval specified but target network is not used.")
 
         # Make (all) qs learnable:
@@ -135,7 +123,8 @@ class DQN(BaseAgent):
 
 
 if __name__ == '__main__':
-    from Logger import TensorboardLogger, StdLogger
+    from loggers.TensorboardLogger import TensorboardLogger
+    # from loggers.StdLogger import StdLogger
     # logger = StdLogger
     # logger_params = {}
     logger = TensorboardLogger
