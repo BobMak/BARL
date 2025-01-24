@@ -135,48 +135,46 @@ class BaseAgent:
         self.learn_env_steps = 0
         self.tot_learn_env_steps = total_timesteps
         with tqdm.tqdm(total=total_timesteps, desc="Training") as pbar:
-
+            state, _ = self.env.reset()
+            reward = 0.0
             while self.learn_env_steps < total_timesteps:
-                state, _ = self.env.reset()
+                action = self.exploration_policy(state)
+                # Add the transition to the replay buffer:
+                state = np.array([state])
+                self.buffer.add(state, np.array([action]), reward, terminated)
 
-                done = False
-                self.num_episodes += 1
-                self.rollout_reward = 0
-                avg_ep_len = 0
-                while not done and self.learn_env_steps < total_timesteps:
-                    action = self.exploration_policy(state)
+                next_state, reward, terminated, truncated, infos = self.env.step(
+                    action)
 
-                    next_state, reward, terminated, truncated, infos = self.env.step(
-                        action)
-                    self._on_step()
-                    avg_ep_len += 1
-                    done = terminated or truncated
-                    self.rollout_reward += reward
+                next_state = np.array([next_state])
+                self._on_step()
+                ep_len += 1
+                done = terminated or truncated
+                self.rollout_reward += reward
 
-                    self.train_this_step = (self.train_interval == -1 and terminated) or \
-                        (self.train_interval != -1 and self.learn_env_steps %
-                        self.train_interval == 0)
+                self.train_this_step = (self.train_interval == -1 and terminated) or \
+                    (self.train_interval != -1 and self.learn_env_steps %
+                    self.train_interval == 0)
 
-                    # Add the transition to the replay buffer:
-                    action = np.array([action])
-                    state = np.array([state])
-                    next_state = np.array([next_state])
-                    self.buffer.add(state, action, reward, terminated)
-                    state = next_state
-                    if self.tot_env_steps % self.log_interval == 0:
-                        train_time = (time.thread_time_ns() - init_train_time) / 1e9
-                        train_fps = self.log_interval / train_time
-                        self.log_history('time/train_fps', train_fps, self.learn_env_steps)
-                        self.avg_eval_rwd = self.evaluate()
-                        init_train_time = time.thread_time_ns()
-                        pbar.update(self.log_interval)
-                    if self.save_checkpoints and self.tot_env_steps % self.chkp_interval == 0:
-                        path = f"{str(self)}_{self.tot_env_steps}" if not self.chkp_latest_only else f"{str(self)}_latest"
-                        self.save(os.path.join(self.base_path, path))
+                state = next_state
+                if self.tot_env_steps % self.log_interval == 0:
+                    train_time = (time.thread_time_ns() - init_train_time) / 1e9
+                    train_fps = self.log_interval / train_time
+                    self.log_history('time/train_fps', train_fps, self.learn_env_steps)
+                    self.avg_eval_rwd = self.evaluate()
+                    init_train_time = time.thread_time_ns()
+                    pbar.update(self.log_interval)
+                if self.save_checkpoints and self.tot_env_steps % self.chkp_interval == 0:
+                    path = f"{str(self)}_{self.tot_env_steps}" if not self.chkp_latest_only else f"{str(self)}_latest"
+                    self.save(os.path.join(self.base_path, path))
 
                 if done:
+                    state, _ = self.env.reset()
+                    self.num_episodes += 1
+                    self.rollout_reward = 0
+                    ep_len = 0
                     self.log_history("rollout/ep_reward", self.rollout_reward, self.learn_env_steps)
-                    self.log_history("rollout/avg_episode_length", avg_ep_len, self.learn_env_steps)
+                    self.log_history("rollout/episode_length", ep_len, self.learn_env_steps)
 
     def _on_step(self) -> None:
         """

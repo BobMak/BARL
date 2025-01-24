@@ -57,5 +57,5 @@ class TestBuffer(unittest.TestCase):
                 state, _ = self.env.reset()
         states, actions, rewards, next_states, dones = self.buffer.sample(batch_size)
         states2, actions2, rewards2, next_states2, dones2 = self.buffer.sample(batch_size)
-        self.assertNotEqual((states[0] - states2[0]).sum(), 0)
-        self.assertNotEqual((actions[0] - actions2[0]).sum(), 0)
+        self.assertNotEqual((states - states2).sum(), 0)
+        self.assertNotEqual((actions - actions2).sum(), 0)

@@ -40,7 +40,14 @@ type_to_np_type = {
 
 
 class Buffer:
-    """Buffer for storing potentially huge amount of images"""
+    """Buffer for storing potentially huge amount of images
+    the transitions are stored in the following way: (s,a,r,done),
+    where r is the reward for transitioning from s to s' with action a
+    when done==True, action and reward are undefined.
+    Note that the done is for the added time step and not for the transition.
+    The user has to add a (s,a,r,done=true) transition with s'
+    in the end of the episode.
+    """
     @typechecked
     def __init__(
             self,
@@ -57,7 +64,8 @@ class Buffer:
         action: th.Tensor or np.ndarray - example action to be stored
         max_in_memory: int - maximum number of samples to store in memory
         img_history_len: int - number of images to store for each sample
-        done_handlers: List[Callable] - list of functions to call when an episode is done
+        done_handlers: List[Callable] - list of functions to call when an episode is done,
+            such as turning rewards into reward-to-go
         """
         assert isinstance(state, th.Tensor) or isinstance(state, np.ndarray)
         self.state_shape = state.shape
@@ -120,6 +128,9 @@ class Buffer:
         if self.ep_end == self.buffer_size:
             self.ep_end = 0
         if done:
+            # actions are rewards are not defined for the last state
+            # self.actions[self.ep_end] = None
+            # self.rewards[self.ep_end] = None
             self._handle_done()
 
     @staticmethod
